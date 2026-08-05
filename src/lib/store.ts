@@ -1,140 +1,129 @@
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 
-export type NoteRow = {
-  id: string;
-  ideaId: string;
-  content: string;
-  authorName: string;
-  createdAt: string;
-  struckThrough: 0 | 1;
+// A "segment" is a run of text within an entry. Once written, a segment's
+// text is never edited or removed -- the only things that can ever happen to
+// it are: it gets flagged struck (when someone strikes it through), or new
+// segments get added around it. This is what makes corrections traceable:
+// the whole history of what was written and crossed out stays visible.
+export type Segment = { text: string; struck: boolean };
+
+type EntryRow = {
+    id: string;
+    authorName: string;
+    createdAt: string;
+    updatedAt: string;
+    content: string; // JSON-encoded Segment[]
 };
 
-export type CommentRow = {
-  id: string;
-  ideaId: string;
-  content: string;
-  authorName: string;
-  createdAt: string;
+export type Entry = {
+    id: string;
+    authorName: string;
+    createdAt: string;
+    updatedAt: string;
+    segments: Segment[];
 };
 
-export type IdeaRow = {
-  id: string;
-  title: string;
-  authorName: string;
-  createdAt: string;
-};
-
-export type IdeaWithChildren = IdeaRow & {
-  notes: NoteRow[];
-  comments: CommentRow[];
-};
-
-export function listIdeas(): (IdeaRow & { notes: NoteRow[]; commentCount: number })[] {
-  const ideas = db
-    .prepare(`SELECT * FROM ideas ORDER BY createdAt DESC`)
-    .all() as IdeaRow[];
-
-  const noteStmt = db.prepare(`SELECT * FROM notes WHERE ideaId = ? ORDER BY createdAt ASC`);
-  const countStmt = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE ideaId = ?`);
-
-  return ideas.map((idea) => ({
-    ...idea,
-    notes: noteStmt.all(idea.id) as NoteRow[],
-    commentCount: (countStmt.get(idea.id) as { c: number }).c,
-  }));
+function toEntry(row: EntryRow): Entry {
+    return {
+          id: row.id,
+          authorName: row.authorName,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          segments: JSON.parse(row.content) as Segment[],
+    };
 }
 
-export function getIdea(id: string): IdeaWithChildren | null {
-  const idea = db.prepare(`SELECT * FROM ideas WHERE id = ?`).get(id) as IdeaRow | undefined;
-  if (!idea) return null;
-  const notes = db
-    .prepare(`SELECT * FROM notes WHERE ideaId = ? ORDER BY createdAt ASC`)
-    .all(id) as NoteRow[];
-  const comments = db
-    .prepare(`SELECT * FROM comments WHERE ideaId = ? ORDER BY createdAt ASC`)
-    .all(id) as CommentRow[];
-  return { ...idea, notes, comments };
+function getRow(id: string): EntryRow | undefined {
+    return db.prepare(`SELECT * FROM entries WHERE id = ?`).get(id) as EntryRow | undefined;
 }
 
-export function createIdea(title: string, authorName: string, firstNote?: string) {
-  const id = randomUUID();
-  const insertIdea = db.prepare(
-    `INSERT INTO ideas (id, title, authorName) VALUES (?, ?, ?)`
-  );
-  const insertNote = db.prepare(
-    `INSERT INTO notes (id, ideaId, content, authorName) VALUES (?, ?, ?, ?)`
-  );
+function saveSegments(id: string, segments: Segment[]) {
+    db.prepare(
+          `UPDATE entries SET content = ?, updatedAt = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`
+        ).run(JSON.stringify(segments), id);
+}
 
-  const tx = db.transaction(() => {
-    insertIdea.run(id, title, authorName);
-    if (firstNote) {
-      insertNote.run(randomUUID(), id, firstNote, authorName);
+// Newest first, so a freshly written entry appears right under the compose
+// box instead of at the bottom of a long scroll.
+export function listEntries(): Entry[] {
+    const rows = db.prepare(`SELECT * FROM entries ORDER BY createdAt DESC`).all() as EntryRow[];
+    return rows.map(toEntry);
+}
+
+export function getEntry(id: string): Entry | null {
+    const row = getRow(id);
+    return row ? toEntry(row) : null;
+}
+
+export function createEntry(content: string, authorName: string): Entry {
+    const id = randomUUID();
+    const segments: Segment[] = [{ text: content, struck: false }];
+    db.prepare(`INSERT INTO entries (id, authorName, content) VALUES (?, ?, ?)`).run(
+          id,
+          authorName,
+          JSON.stringify(segments)
+        );
+    return getEntry(id)!;
+}
+
+// Add more text to the end of an entry -- the normal way a diary entry keeps
+// growing over time.
+export function appendToEntry(id: string, text: string): Entry {
+    const row = getRow(id);
+    if (!row) throw new Error("not found");
+    const segments = JSON.parse(row.content) as Segment[];
+    segments.push({ text, struck: false });
+    saveSegments(id, segments);
+    return getEntry(id)!;
+}
+
+// Insert new text right after a given segment. Used right after striking
+// something through, so the corrected wording can sit exactly where the old
+// text was instead of only ever landing at the very end of the entry.
+export function insertAfterSegment(id: string, afterIndex: number, text: string): Entry {
+    const row = getRow(id);
+    if (!row) throw new Error("not found");
+    const segments = JSON.parse(row.content) as Segment[];
+    if (afterIndex < -1 || afterIndex >= segments.length) throw new Error("invalid position");
+    segments.splice(afterIndex + 1, 0, { text, struck: false });
+    saveSegments(id, segments);
+    return getEntry(id)!;
+}
+
+// Strike through part (or all) of an existing, not-yet-struck segment. The
+// characters themselves are never deleted -- the range is split off into its
+// own segment and flagged struck, everything else is left exactly as it was.
+// Returns the updated entry plus the index of the newly-struck segment, so
+// the caller can offer to write the correction in immediately afterward.
+export function strikeRange(
+    id: string,
+    segmentIndex: number,
+    start: number,
+    end: number
+  ): { entry: Entry; struckIndex: number } {
+    const row = getRow(id);
+    if (!row) throw new Error("not found");
+    const segments = JSON.parse(row.content) as Segment[];
+    const seg = segments[segmentIndex];
+    if (!seg) throw new Error("segment not found");
+    if (seg.struck) throw new Error("already struck");
+    if (start < 0 || end > seg.text.length || start >= end) {
+          throw new Error("invalid range");
     }
-  });
-  tx();
 
-  return getIdea(id)!;
-}
+  const before = seg.text.slice(0, start);
+    const middle = seg.text.slice(start, end);
+    const after = seg.text.slice(end);
 
-export function addNote(ideaId: string, content: string, authorName: string): NoteRow {
-  const idea = db.prepare(`SELECT id FROM ideas WHERE id = ?`).get(ideaId);
-  if (!idea) throw new Error("not found");
+  const replacement: Segment[] = [];
+    if (before) replacement.push({ text: before, struck: false });
+    const struckIndex = segmentIndex + replacement.length;
+    replacement.push({ text: middle, struck: true });
+    if (after) replacement.push({ text: after, struck: false });
 
-  const id = randomUUID();
-  db.prepare(`INSERT INTO notes (id, ideaId, content, authorName) VALUES (?, ?, ?, ?)`).run(
-    id,
-    ideaId,
-    content,
-    authorName
-  );
-  return db.prepare(`SELECT * FROM notes WHERE id = ?`).get(id) as NoteRow;
-}
+  segments.splice(segmentIndex, 1, ...replacement);
+    saveSegments(id, segments);
 
-// Correct a note: the original is never edited or deleted — it's flagged
-// struckThrough (rendered with a strikethrough) and a brand new note is
-// created with the corrected text, preserving the whole trail of thought.
-export function correctNote(
-  ideaId: string,
-  noteId: string,
-  content: string,
-  authorName: string
-): NoteRow {
-  const original = db.prepare(`SELECT * FROM notes WHERE id = ?`).get(noteId) as
-    | NoteRow
-    | undefined;
-  if (!original || original.ideaId !== ideaId) {
-    throw new Error("not found");
-  }
-  if (original.struckThrough) {
-    throw new Error("already corrected");
-  }
-
-  const newId = randomUUID();
-  const tx = db.transaction(() => {
-    db.prepare(`UPDATE notes SET struckThrough = 1 WHERE id = ?`).run(noteId);
-    db.prepare(`INSERT INTO notes (id, ideaId, content, authorName) VALUES (?, ?, ?, ?)`).run(
-      newId,
-      ideaId,
-      content,
-      authorName
-    );
-  });
-  tx();
-
-  return db.prepare(`SELECT * FROM notes WHERE id = ?`).get(newId) as NoteRow;
-}
-
-export function addComment(ideaId: string, content: string, authorName: string): CommentRow {
-  const idea = db.prepare(`SELECT id FROM ideas WHERE id = ?`).get(ideaId);
-  if (!idea) throw new Error("not found");
-
-  const id = randomUUID();
-  db.prepare(`INSERT INTO comments (id, ideaId, content, authorName) VALUES (?, ?, ?, ?)`).run(
-    id,
-    ideaId,
-    content,
-    authorName
-  );
-  return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(id) as CommentRow;
+  return { entry: getEntry(id)!, struckIndex };
 }
