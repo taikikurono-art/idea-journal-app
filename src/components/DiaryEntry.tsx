@@ -172,7 +172,7 @@ export default function DiaryEntry({
   return (
     <div className="rounded-xl border border-pencil/20 bg-white/70 p-5 shadow-sm">
       <div className="text-xs text-pencil mb-2 flex items-center justify-between"><span>
-{entry.authorName}</span><button onClick={handleDelete} disabled={deleting} className="text-pencil/60 hover:text-red-600 disabled:opacity-50">{deleting ? "削除中..." : "削除"}</button> ・ {formatDateTime(entry.createdAt)}
+{entry.authorName} ・ {formatDateTime(entry.createdAt)}</span><button onClick={handleDelete} disabled={deleting} className="text-pencil/60 hover:text-red-600 disabled:opacity-50">{deleting ? "削除中..." : "削除"}</button>
       </div>
 
       <p onMouseUp={handleMouseUp} className="whitespace-pre-wrap leading-relaxed text-ink">
