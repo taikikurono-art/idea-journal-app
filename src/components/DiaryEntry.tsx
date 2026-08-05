@@ -46,14 +46,14 @@ type PendingSelection = { segmentIndex: number; start: number; end: number };
 
 export default function DiaryEntry({
   entry,
-  onChange,
+  onChange, onDelete,
 }: {
   entry: EntryData;
-  onChange: (entry: EntryData) => void;
+  onChange: (entry: EntryData) => void; onDelete: (id: string) => void;
 }) {
   const [selection, setSelection] = useState<PendingSelection | null>(null);
   const [striking, setStriking] = useState(false);
-  const [strikeError, setStrikeError] = useState<string | null>(null);
+  const [strikeError, setStrikeError] = useState<string | null>(null); const [deleting, setDeleting] = useState(false);
 
   const [insertAfter, setInsertAfter] = useState<number | null>(null);
   const [insertDraft, setInsertDraft] = useState("");
@@ -148,7 +148,7 @@ export default function DiaryEntry({
 }
 }
 
-  async function submitAppend(e: React.FormEvent) {
+  async function handleDelete() { if (!window.confirm("この投稿を削除します。よろしいですか？(取り消し線と違い、元に戻せません)")) { return; } setDeleting(true); try { const res = await fetch(`/api/entries/${entry.id}`, { method: "DELETE" }); if (res.ok) onDelete(entry.id); } finally { setDeleting(false); } }  async function submitAppend(e: React.FormEvent) {
     e.preventDefault();
     if (!appendDraft.trim()) return;
     setAppending(true);
@@ -171,8 +171,8 @@ export default function DiaryEntry({
 
   return (
     <div className="rounded-xl border border-pencil/20 bg-white/70 p-5 shadow-sm">
-      <div className="text-xs text-pencil mb-2">
-{entry.authorName} ・ {formatDateTime(entry.createdAt)}
+      <div className="text-xs text-pencil mb-2 flex items-center justify-between"><span>
+{entry.authorName}</span><button onClick={handleDelete} disabled={deleting} className="text-pencil/60 hover:text-red-600 disabled:opacity-50">{deleting ? "削除中..." : "削除"}</button> ・ {formatDateTime(entry.createdAt)}
       </div>
 
       <p onMouseUp={handleMouseUp} className="whitespace-pre-wrap leading-relaxed text-ink">
