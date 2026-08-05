@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import HelpModal from "@/components/HelpModal";
 
 export default function Header({ userName }: { userName: string }) {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function Header({ userName }: { userName: string }) {
         </Link>
         <div className="flex items-center gap-3 text-sm text-pencil">
           <span>{userName} さん</span>
+          <HelpModal />
           <button onClick={logout} className="underline hover:text-accent">
             ログアウト
           </button>
