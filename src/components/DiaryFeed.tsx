@@ -67,6 +67,7 @@ export default function DiaryFeed({ initialEntries }: { initialEntries: EntryDat
             onChange={(updated) =>
               setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
 }
+            onDelete={(id) => setEntries((prev) => prev.filter((e) => e.id !== id))}
           />
         ))}
       </div>
